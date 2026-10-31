@@ -36,4 +36,14 @@ export class Money{
 
         return this.amount.toFixed(2);
     }
+
+    public subtract(other: Money): Money { //subtrai valor do saldo
+        if(other.currency !== this.currency){
+            throw new Error('currency does not match')
+        }
+        const money = this.amount.minus(other.amount).toString();
+        const moneyReturn = new Money(money, this.currency)
+        
+        return moneyReturn
+    }
 }

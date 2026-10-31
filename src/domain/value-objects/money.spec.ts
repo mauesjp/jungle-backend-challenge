@@ -29,4 +29,41 @@ describe('Money', () => {
 
         expect(result.getAmount()).toBe('150.00');
     });
+
+    it('should reject addition of different currencies', () => {
+        const money = new Money('100.00', 'BRL');
+        const money2 = new Money('50.00', 'USD');
+
+        expect(() => money.add(money2)).toThrow();
+    });
+
+    it('should subtract two monetary values', () => {
+
+        const money = new Money('100.00', 'BRL')
+        const money2 = new Money('30.00', 'BRL')
+
+        const result = money.subtract(money2)
+
+        expect(result.getAmount()).toBe('70.00');
+    });
+
+    it('should reject subtraction of different currencies', () => {
+        const money = new Money('100.00', 'BRL');
+        const money2 = new Money('30.00', 'USD');
+
+        expect(() => money.subtract(money2)).toThrow();
+    });
+
+    it('should not modify original monetary values', () => {
+        const money = new Money('100.00', 'BRL')
+        const money2 = new Money('30.00', 'BRL')
+
+        const initialAmount = money.getAmount()
+        const initialAmount2 = money2.getAmount()
+
+        money.subtract(money2)
+
+        expect(money.getAmount()).toBe(initialAmount)
+        expect(money2.getAmount()).toBe(initialAmount2)
+    })
 });
