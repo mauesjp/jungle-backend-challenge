@@ -7,7 +7,8 @@ import { Migrator } from '@mikro-orm/migrations';
 
 import { WagerTransactionEntity } from './infrastructure/persistence/entities/wager-transaction.entity.js';
 import { WalletLedgerEntryEntity } from './infrastructure/persistence/entities/wallet-ledger-entry.entity.js';
-
+import { WageringController } from './wagering/wagering.controller.js';
+import { WageringService } from './wagering/wagering.service.js';
 import { WalletsController } from './wallets/wallets.controller.js';
 import { WalletsService } from './wallets/wallets.service.js';
 
@@ -36,7 +37,7 @@ import { AppService } from './app.service.js';
       }),
     }),
   ],
-  controllers: [AppController, WalletsController],
-  providers: [AppService, WalletsService],
+  controllers: [AppController, WalletsController, WageringController],
+  providers: [AppService, WalletsService, WageringService],
 })
 export class AppModule {}
