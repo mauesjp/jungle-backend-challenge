@@ -64,9 +64,10 @@ export class WageringService {
 
     const isBet = data.kind === WagerTransactionKind.Bet;
     const isWin = data.kind === WagerTransactionKind.Win;
+    const isLoss = data.kind === WagerTransactionKind.Loss;
 
-    if (!isBet && !isWin) {
-      throw new BadRequestException('Only BET and WIN are supported');
+    if (!isBet && !isWin && !isLoss) {
+      throw new BadRequestException('Only BET, WIN, and LOSS are supported');
     }
 
     if (
@@ -193,7 +194,6 @@ export class WageringService {
           };
         }
 
-        // WIN pode referenciar uma BET da mesma rodada.
         let reference: WagerTransactionEntity | null = null;
 
         if (data.referenceExternalTransactionId) {
@@ -217,13 +217,15 @@ export class WageringService {
 
         const before = new Decimal(wallet.balance);
 
-        const sufficient = isWin || before.gte(amount);
+        const sufficient = !isBet || before.gte(amount);
 
-        const after = sufficient
-          ? isWin
+        const after = isBet
+          ? sufficient
+            ? before.minus(amount)
+            : before
+          : isWin
             ? before.plus(amount)
-            : before.minus(amount)
-          : before;
+            : before;
 
         const transaction = new WagerTransactionEntity();
 
@@ -235,9 +237,7 @@ export class WageringService {
         transaction.playerId = data.playerId;
         transaction.roundId = data.roundId;
         transaction.gameId = data.gameId;
-        transaction.kind = isWin
-          ? WagerTransactionKind.Win
-          : WagerTransactionKind.Bet;
+        transaction.kind = data.kind as WagerTransactionKind;
         transaction.amount = normalizedAmount;
         transaction.currency = data.money.currency;
         transaction.processedAt = new Date();
@@ -264,7 +264,7 @@ export class WageringService {
         transaction.resultPayload = { balance };
         tx.persist(transaction);
 
-        if (sufficient) {
+        if (sufficient && !isLoss) {
           wallet.balance = after.toFixed(2);
 
           const ledger = new WalletLedgerEntryEntity();
