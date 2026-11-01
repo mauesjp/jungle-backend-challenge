@@ -8,6 +8,9 @@ import { Migrator } from '@mikro-orm/migrations';
 import { WagerTransactionEntity } from './infrastructure/persistence/entities/wager-transaction.entity.js';
 import { WalletLedgerEntryEntity } from './infrastructure/persistence/entities/wallet-ledger-entry.entity.js';
 
+import { WalletsController } from './wallets/wallets.controller.js';
+import { WalletsService } from './wallets/wallets.service.js';
+
 import { AppController } from './app.controller.js';
 import { AppService } from './app.service.js';
 
@@ -19,6 +22,7 @@ import { AppService } from './app.service.js';
 
     MikroOrmModule.forRootAsync({
       inject: [ConfigService],
+      driver: PostgreSqlDriver,
       useFactory: (config: ConfigService) => ({
         extensions: [Migrator],
         driver: PostgreSqlDriver,
@@ -32,7 +36,7 @@ import { AppService } from './app.service.js';
       }),
     }),
   ],
-  controllers: [AppController],
-  providers: [AppService],
+  controllers: [AppController, WalletsController],
+  providers: [AppService, WalletsService],
 })
 export class AppModule {}
