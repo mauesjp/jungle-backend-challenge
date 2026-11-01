@@ -5,6 +5,9 @@ import { PostgreSqlDriver } from '@mikro-orm/postgresql';
 import { WalletEntity } from './infrastructure/persistence/entities/wallet.entity.js';
 import { Migrator } from '@mikro-orm/migrations';
 
+import { WagerTransactionEntity } from './infrastructure/persistence/entities/wager-transaction.entity.js';
+import { WalletLedgerEntryEntity } from './infrastructure/persistence/entities/wallet-ledger-entry.entity.js';
+
 import { AppController } from './app.controller.js';
 import { AppService } from './app.service.js';
 
@@ -24,7 +27,7 @@ import { AppService } from './app.service.js';
         user: config.getOrThrow<string>('DB_USER'),
         password: config.getOrThrow<string>('DB_PASSWORD'),
         dbName: config.getOrThrow<string>('DB_NAME'),
-        entities: [WalletEntity],
+        entities: [WalletEntity, WagerTransactionEntity, WalletLedgerEntryEntity],
         allowGlobalContext: false,
       }),
     }),
