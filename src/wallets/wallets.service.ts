@@ -1,13 +1,22 @@
-
-import { BadRequestException, ConflictException, Injectable,} from '@nestjs/common';
-import { EntityManager, UniqueConstraintViolationException } from '@mikro-orm/postgresql';
+import {
+  BadRequestException,
+  ConflictException,
+  Injectable,
+} from '@nestjs/common';
+import {
+  EntityManager,
+  UniqueConstraintViolationException,
+} from '@mikro-orm/postgresql';
 import { Decimal } from 'decimal.js';
 import { createHash } from 'node:crypto';
 
 import { WalletEntity } from '../infrastructure/persistence/entities/wallet.entity.js';
 import { WagerTransactionEntity } from '../infrastructure/persistence/entities/wager-transaction.entity.js';
 import { WalletLedgerEntryEntity } from '../infrastructure/persistence/entities/wallet-ledger-entry.entity.js';
-import { WagerTransactionKind, WagerTransactionStatus,} from '../domain/enums/wager-transaction.enum.js';
+import {
+  WagerTransactionKind,
+  WagerTransactionStatus,
+} from '../domain/enums/wager-transaction.enum.js';
 import { LedgerDirection } from '../domain/enums/ledger-direction.enum.js';
 
 export interface CreateWalletDto {
@@ -36,10 +45,7 @@ export class WalletsService {
       throw new BadRequestException('Only BRL is supported');
     }
 
-    if (
-      typeof amount !== 'string' ||
-      !/^\d+(\.\d{1,2})?$/.test(amount)
-    ) {
+    if (typeof amount !== 'string' || !/^\d+(\.\d{1,2})?$/.test(amount)) {
       throw new BadRequestException('Invalid amount format');
     }
 
@@ -68,11 +74,13 @@ export class WalletsService {
           opening.externalTransactionId = `opening:${wallet.id}`;
           opening.idempotencyKey = `opening:${wallet.id}`;
           opening.payloadHash = createHash('sha256')
-            .update(JSON.stringify({
-              playerId,
-              amount: initialAmount,
-              currency,
-            }))
+            .update(
+              JSON.stringify({
+                playerId,
+                amount: initialAmount,
+                currency,
+              }),
+            )
             .digest('hex');
 
           opening.wallet = wallet;

@@ -1,13 +1,6 @@
-import {
-  Body,
-  Controller,
-  Headers,
-  Post,
-} from '@nestjs/common';
-import {
-  WageringService,
-  type CreateBetDto,
-} from './wagering.service.js';
+import { Body, Controller, Headers, Post } from '@nestjs/common';
+
+import { WageringService, type CreateWagerDto } from './wagering.service.js';
 
 @Controller('wagering/transactions')
 export class WageringController {
@@ -15,9 +8,9 @@ export class WageringController {
 
   @Post()
   create(
-    @Body() body: CreateBetDto,
+    @Body() body: CreateWagerDto,
     @Headers('idempotency-key') key: string,
   ) {
-    return this.wageringService.createBet(body, key);
+    return this.wageringService.process(body, key);
   }
 }

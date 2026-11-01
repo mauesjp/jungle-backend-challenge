@@ -1,4 +1,3 @@
-
 import {
   BadRequestException,
   ConflictException,
@@ -22,7 +21,7 @@ import {
 } from '../domain/enums/wager-transaction.enum.js';
 import { LedgerDirection } from '../domain/enums/ledger-direction.enum.js';
 
-export interface CreateBetDto {
+export interface CreateWagerDto {
   providerId: string;
   externalTransactionId: string;
   playerId: string;
@@ -34,13 +33,18 @@ export interface CreateBetDto {
     amount: string;
     currency: string;
   };
+  referenceExternalTransactionId?: string;
 }
 
 @Injectable()
 export class WageringService {
   constructor(private readonly em: EntityManager) {}
 
-  async createBet(data: CreateBetDto, idempotencyKey: string) {
+  async createBet(data: CreateWagerDto, idempotencyKey: string) {
+    return this.process(data, idempotencyKey);
+  }
+
+  async process(data: CreateWagerDto, idempotencyKey: string) {
     if (!idempotencyKey?.trim()) {
       throw new BadRequestException('Idempotency-Key is required');
     }
@@ -54,14 +58,15 @@ export class WageringService {
       data?.gameId,
     ];
 
-    if (required.some((value) =>
-      typeof value !== 'string' || !value.trim()
-    )) {
+    if (required.some((value) => typeof value !== 'string' || !value.trim())) {
       throw new BadRequestException('Missing required fields');
     }
 
-    if (data.kind !== WagerTransactionKind.Bet) {
-      throw new BadRequestException('Only BET is supported');
+    const isBet = data.kind === WagerTransactionKind.Bet;
+    const isWin = data.kind === WagerTransactionKind.Win;
+
+    if (!isBet && !isWin) {
+      throw new BadRequestException('Only BET and WIN are supported');
     }
 
     if (
@@ -72,15 +77,26 @@ export class WageringService {
       throw new BadRequestException('Invalid money');
     }
 
+    if (
+      data.referenceExternalTransactionId !== undefined &&
+      (typeof data.referenceExternalTransactionId !== 'string' ||
+        !data.referenceExternalTransactionId.trim())
+    ) {
+      throw new BadRequestException('Invalid reference');
+    }
+
+    if (isBet && data.referenceExternalTransactionId) {
+      throw new BadRequestException('BET cannot reference another transaction');
+    }
+
     const amount = new Decimal(data.money.amount);
 
     if (!amount.isFinite() || !amount.gt(0)) {
-      throw new BadRequestException('BET amount must be positive');
+      throw new BadRequestException('Amount must be positive');
     }
 
     const normalizedAmount = amount.toFixed(2);
 
-    // Campos fixos em ordem estável para gerar o hash.
     const payload = {
       providerId: data.providerId,
       externalTransactionId: data.externalTransactionId,
@@ -88,30 +104,29 @@ export class WageringService {
       walletId: data.walletId,
       roundId: data.roundId,
       gameId: data.gameId,
-      kind: WagerTransactionKind.Bet,
+      kind: data.kind,
       money: {
         amount: normalizedAmount,
-        currency: 'BRL',
+        currency: data.money.currency,
       },
+      referenceExternalTransactionId:
+        data.referenceExternalTransactionId ?? null,
     };
 
     const payloadHash = createHash('sha256')
       .update(JSON.stringify(payload))
       .digest('hex');
 
-    const replay = async () => {
-      const existing = await this.em.fork().findOne(
-        WagerTransactionEntity,
-        {
-          $or: [
-            { idempotencyKey },
-            {
-              providerId: data.providerId,
-              externalTransactionId: data.externalTransactionId,
-            },
-          ],
-        },
-      );
+    const findDuplicate = async () => {
+      const existing = await this.em.fork().findOne(WagerTransactionEntity, {
+        $or: [
+          { idempotencyKey },
+          {
+            providerId: data.providerId,
+            externalTransactionId: data.externalTransactionId,
+          },
+        ],
+      });
 
       if (!existing) return null;
 
@@ -130,13 +145,11 @@ export class WageringService {
       };
     };
 
-    // Verificação rápida antes da transação.
-    const existing = await replay();
-    if (existing) return existing;
+    const duplicate = await findDuplicate();
+    if (duplicate) return duplicate;
 
     try {
       return await this.em.transactional(async (tx) => {
-        // O lock protege esta carteira durante o débito.
         const wallet = await tx.findOne(
           WalletEntity,
           { id: data.walletId },
@@ -154,56 +167,86 @@ export class WageringService {
           throw new BadRequestException('Wallet mismatch');
         }
 
-        // Verificar novamente depois de obter o lock.
-        const duplicate = await tx.findOne(
-          WagerTransactionEntity,
-          {
-            $or: [
-              { idempotencyKey },
-              {
-                providerId: data.providerId,
-                externalTransactionId: data.externalTransactionId,
-              },
-            ],
-          },
-        );
+        const existing = await tx.findOne(WagerTransactionEntity, {
+          $or: [
+            { idempotencyKey },
+            {
+              providerId: data.providerId,
+              externalTransactionId: data.externalTransactionId,
+            },
+          ],
+        });
 
-        if (duplicate) {
+        if (existing) {
           if (
-            duplicate.idempotencyKey !== idempotencyKey ||
-            duplicate.payloadHash !== payloadHash
+            existing.idempotencyKey !== idempotencyKey ||
+            existing.payloadHash !== payloadHash
           ) {
             throw new ConflictException('Idempotency conflict');
           }
 
           return {
-            transactionId: duplicate.id,
-            status: duplicate.status,
-            balance: duplicate.resultPayload?.balance,
+            transactionId: existing.id,
+            status: existing.status,
+            balance: existing.resultPayload?.balance,
             idempotentReplay: true,
           };
         }
 
+        // WIN pode referenciar uma BET da mesma rodada.
+        let reference: WagerTransactionEntity | null = null;
+
+        if (data.referenceExternalTransactionId) {
+          reference = await tx.findOne(WagerTransactionEntity, {
+            providerId: data.providerId,
+            externalTransactionId: data.referenceExternalTransactionId,
+          });
+
+          if (
+            !reference ||
+            reference.kind !== WagerTransactionKind.Bet ||
+            reference.status !== WagerTransactionStatus.Processed ||
+            reference.playerId !== data.playerId ||
+            reference.wallet.id !== wallet.id ||
+            reference.currency !== data.money.currency ||
+            reference.roundId !== data.roundId
+          ) {
+            throw new BadRequestException('Invalid BET reference');
+          }
+        }
+
         const before = new Decimal(wallet.balance);
-        const sufficient = before.gte(amount);
+
+        const sufficient = isWin || before.gte(amount);
+
         const after = sufficient
-          ? before.minus(amount)
+          ? isWin
+            ? before.plus(amount)
+            : before.minus(amount)
           : before;
 
         const transaction = new WagerTransactionEntity();
+
         transaction.providerId = data.providerId;
-        transaction.externalTransactionId =
-          data.externalTransactionId;
+        transaction.externalTransactionId = data.externalTransactionId;
         transaction.idempotencyKey = idempotencyKey;
         transaction.payloadHash = payloadHash;
         transaction.wallet = wallet;
         transaction.playerId = data.playerId;
         transaction.roundId = data.roundId;
         transaction.gameId = data.gameId;
-        transaction.kind = WagerTransactionKind.Bet;
+        transaction.kind = isWin
+          ? WagerTransactionKind.Win
+          : WagerTransactionKind.Bet;
         transaction.amount = normalizedAmount;
         transaction.currency = data.money.currency;
         transaction.processedAt = new Date();
+
+        if (reference) {
+          transaction.referenceTransactionId = reference.id;
+          transaction.referenceExternalTransactionId =
+            data.referenceExternalTransactionId;
+        }
 
         transaction.status = sufficient
           ? WagerTransactionStatus.Processed
@@ -225,9 +268,12 @@ export class WageringService {
           wallet.balance = after.toFixed(2);
 
           const ledger = new WalletLedgerEntryEntity();
+
           ledger.wallet = wallet;
           ledger.transaction = transaction;
-          ledger.direction = LedgerDirection.Debit;
+          ledger.direction = isWin
+            ? LedgerDirection.Credit
+            : LedgerDirection.Debit;
           ledger.amount = normalizedAmount;
           ledger.balanceBefore = before.toFixed(2);
           ledger.balanceAfter = after.toFixed(2);
@@ -245,9 +291,8 @@ export class WageringService {
         };
       });
     } catch (error) {
-      // Outra requisição pode ter inserido a operação primeiro.
       if (error instanceof UniqueConstraintViolationException) {
-        const existing = await replay();
+        const existing = await findDuplicate();
         if (existing) return existing;
       }
 

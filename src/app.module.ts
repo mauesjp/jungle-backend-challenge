@@ -32,7 +32,11 @@ import { AppService } from './app.service.js';
         user: config.getOrThrow<string>('DB_USER'),
         password: config.getOrThrow<string>('DB_PASSWORD'),
         dbName: config.getOrThrow<string>('DB_NAME'),
-        entities: [WalletEntity, WagerTransactionEntity, WalletLedgerEntryEntity],
+        entities: [
+          WalletEntity,
+          WagerTransactionEntity,
+          WalletLedgerEntryEntity,
+        ],
         allowGlobalContext: false,
       }),
     }),

@@ -1,69 +1,67 @@
-import {describe, expect, it} from 'vitest';
-import {Money} from './money.js';
+import { describe, expect, it } from 'vitest';
+import { Money } from './money.js';
 
 describe('Money', () => {
-    it('should create a valid monetary value', () => {
-        const money = new Money('100.50', 'BRL');
+  it('should create a valid monetary value', () => {
+    const money = new Money('100.50', 'BRL');
 
-        expect(money).toBeInstanceOf(Money);
-    });
+    expect(money).toBeInstanceOf(Money);
+  });
 
-    it('should reject amounts with excessive decimal places', () => {
-        expect(() => new Money('100.123', 'BRL')).toThrow();
-    });
+  it('should reject amounts with excessive decimal places', () => {
+    expect(() => new Money('100.123', 'BRL')).toThrow();
+  });
 
-    it('should reject NaN', () => {
-        expect(() => new Money('NaN', 'BRL')).toThrow();
-    });
+  it('should reject NaN', () => {
+    expect(() => new Money('NaN', 'BRL')).toThrow();
+  });
 
-    it('should reject Infinity', () => {
-        expect(() => new Money('Infinity', 'BRL')).toThrow();
-    });
+  it('should reject Infinity', () => {
+    expect(() => new Money('Infinity', 'BRL')).toThrow();
+  });
 
-    it('should add two monetary values', () => {
+  it('should add two monetary values', () => {
+    const money = new Money('100.00', 'BRL');
+    const money2 = new Money('50.00', 'BRL');
 
-        const money = new Money('100.00', 'BRL')
-        const money2 = new Money('50.00', 'BRL')
+    const result = money.add(money2);
 
-        const result = money.add(money2)
+    expect(result.getAmount()).toBe('150.00');
+  });
 
-        expect(result.getAmount()).toBe('150.00');
-    });
+  it('should reject addition of different currencies', () => {
+    const money = new Money('100.00', 'BRL');
+    const money2 = new Money('50.00', 'USD');
 
-    it('should reject addition of different currencies', () => {
-        const money = new Money('100.00', 'BRL');
-        const money2 = new Money('50.00', 'USD');
+    expect(() => money.add(money2)).toThrow();
+  });
 
-        expect(() => money.add(money2)).toThrow();
-    });
+  it('should subtract two monetary values', () => {
+    const money = new Money('100.00', 'BRL');
+    const money2 = new Money('30.00', 'BRL');
 
-    it('should subtract two monetary values', () => {
+    const result = money.subtract(money2);
 
-        const money = new Money('100.00', 'BRL')
-        const money2 = new Money('30.00', 'BRL')
+    expect(result.getAmount()).toBe('70.00');
+  });
 
-        const result = money.subtract(money2)
+  it('should reject subtraction of different currencies', () => {
+    const money = new Money('100.00', 'BRL');
+    const money2 = new Money('30.00', 'USD');
 
-        expect(result.getAmount()).toBe('70.00');
-    });
+    expect(() => money.subtract(money2)).toThrow();
+  });
 
-    it('should reject subtraction of different currencies', () => {
-        const money = new Money('100.00', 'BRL');
-        const money2 = new Money('30.00', 'USD');
+  it('should not modify original monetary values', () => {
+    const money = new Money('100.00', 'BRL');
+    const money2 = new Money('30.00', 'BRL');
 
-        expect(() => money.subtract(money2)).toThrow();
-    });
+    const initialAmount = money.getAmount();
+    const initialAmount2 = money2.getAmount();
 
-    it('should not modify original monetary values', () => {
-        const money = new Money('100.00', 'BRL')
-        const money2 = new Money('30.00', 'BRL')
+    money.subtract(money2);
 
-        const initialAmount = money.getAmount()
-        const initialAmount2 = money2.getAmount()
-
-        money.subtract(money2)
-
-        expect(money.getAmount()).toBe(initialAmount)
-        expect(money2.getAmount()).toBe(initialAmount2)
-    })
+    expect(money.getAmount()).toBe(initialAmount);
+    expect(money2.getAmount()).toBe(initialAmount2);
+  });
 });
