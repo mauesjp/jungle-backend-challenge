@@ -77,4 +77,10 @@ export class WagerTransactionEntity {
 
   @Property({ type: 'datetime', nullable: true })
   processedAt?: Date;
+
+  @Property({ type: 'integer', default: 0 })
+  retryAttempts: number = 0;
+
+  @Property({ type: 'datetime', nullable: true })
+  nextRetryAt?: Date;
 }

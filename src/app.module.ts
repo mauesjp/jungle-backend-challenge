@@ -18,6 +18,7 @@ import { WalletsService } from './wallets/wallets.service.js';
 import { WageringController } from './wagering/wagering.controller.js';
 import { WageringService } from './wagering/wagering.service.js';
 import { ProviderTransactionsController } from './wagering/provider-transactions.controller.js';
+import { PendingReferenceWorker } from './wagering/pending-reference.worker.js';
 
 @Module({
   imports: [
@@ -45,6 +46,7 @@ import { ProviderTransactionsController } from './wagering/provider-transactions
       }),
     }),
   ],
+
   controllers: [
     AppController,
     WalletsController,
@@ -52,6 +54,12 @@ import { ProviderTransactionsController } from './wagering/provider-transactions
     ProviderTransactionsController,
     HealthController,
   ],
-  providers: [AppService, WalletsService, WageringService],
+
+  providers: [
+    AppService,
+    WalletsService,
+    WageringService,
+    PendingReferenceWorker,
+  ],
 })
 export class AppModule {}

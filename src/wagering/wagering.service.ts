@@ -4,25 +4,21 @@ import {
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
-
 import {
   EntityManager,
   LockMode,
   UniqueConstraintViolationException,
 } from '@mikro-orm/postgresql';
-
 import { Decimal } from 'decimal.js';
 import { createHash } from 'node:crypto';
 
 import { WalletEntity } from '../infrastructure/persistence/entities/wallet.entity.js';
 import { WagerTransactionEntity } from '../infrastructure/persistence/entities/wager-transaction.entity.js';
 import { WalletLedgerEntryEntity } from '../infrastructure/persistence/entities/wallet-ledger-entry.entity.js';
-
 import {
   WagerTransactionKind as Kind,
   WagerTransactionStatus as Status,
 } from '../domain/enums/wager-transaction.enum.js';
-
 import { LedgerDirection } from '../domain/enums/ledger-direction.enum.js';
 
 export interface CreateWagerDto {
@@ -44,31 +40,15 @@ export interface CreateWagerDto {
 export class WageringService {
   constructor(private readonly em: EntityManager) {}
 
-  // Consulta uma transação pelo ID interno.
-  async getById(transactionId: string) {
-    const transaction = await this.em.findOne(WagerTransactionEntity, {
-      id: transactionId,
-    });
+  private readonly maxRetryAttempts = 5;
 
-    if (!transaction) {
-      throw new NotFoundException('Transaction not found');
-    }
-
-    return this.toDetails(transaction);
-  }
-
-  // Consulta uma transação pelo identificador do provedor.
-  async getByProvider(providerId: string, externalTransactionId: string) {
-    const transaction = await this.em.findOne(WagerTransactionEntity, {
-      providerId,
-      externalTransactionId,
-    });
-
-    if (!transaction) {
-      throw new NotFoundException('Transaction not found');
-    }
-
-    return this.toDetails(transaction);
+  private response(transaction: WagerTransactionEntity, replay = false) {
+    return {
+      transactionId: transaction.id,
+      status: transaction.status,
+      balance: transaction.resultPayload?.balance,
+      idempotentReplay: replay,
+    };
   }
 
   private toDetails(transaction: WagerTransactionEntity) {
@@ -90,12 +70,258 @@ export class WageringService {
         transaction.referenceExternalTransactionId ?? null,
       failureCode: transaction.failureCode ?? null,
       processedAt: transaction.processedAt ?? null,
+      retryAttempts: transaction.retryAttempts,
+      nextRetryAt: transaction.nextRetryAt ?? null,
       balance: transaction.resultPayload?.balance ?? null,
     };
   }
 
+  async getById(transactionId: string) {
+    const transaction = await this.em.findOne(WagerTransactionEntity, {
+      id: transactionId,
+    });
+
+    if (!transaction) {
+      throw new NotFoundException('Transaction not found');
+    }
+
+    return this.toDetails(transaction);
+  }
+
+  async getByProvider(providerId: string, externalTransactionId: string) {
+    const transaction = await this.em.findOne(WagerTransactionEntity, {
+      providerId,
+      externalTransactionId,
+    });
+
+    if (!transaction) {
+      throw new NotFoundException('Transaction not found');
+    }
+
+    return this.toDetails(transaction);
+  }
+
+  private findExisting(
+    em: EntityManager,
+    data: CreateWagerDto,
+    idempotencyKey: string,
+  ) {
+    return em.findOne(WagerTransactionEntity, {
+      $or: [
+        { idempotencyKey },
+        {
+          providerId: data.providerId,
+          externalTransactionId: data.externalTransactionId,
+        },
+      ],
+    });
+  }
+
+  private checkReplay(
+    transaction: WagerTransactionEntity,
+    idempotencyKey: string,
+    payloadHash: string,
+  ) {
+    if (
+      transaction.idempotencyKey !== idempotencyKey ||
+      transaction.payloadHash !== payloadHash
+    ) {
+      throw new ConflictException('Idempotency conflict');
+    }
+
+    return this.response(transaction, true);
+  }
+
+  private async findReference(
+    em: EntityManager,
+    transaction: WagerTransactionEntity,
+  ) {
+    if (!transaction.referenceExternalTransactionId) {
+      return null;
+    }
+
+    return em.findOne(WagerTransactionEntity, {
+      providerId: transaction.providerId,
+      externalTransactionId: transaction.referenceExternalTransactionId,
+    });
+  }
+
+  // Aplica as regras de uma operação utilizando a carteira bloqueada.
+  private async applyTransaction(
+    tx: EntityManager,
+    wallet: WalletEntity,
+    transaction: WagerTransactionEntity,
+    allowPending: boolean,
+  ) {
+    const amount = new Decimal(transaction.amount);
+    const before = new Decimal(wallet.balance);
+    const kind = transaction.kind;
+
+    const isReversal = kind === Kind.Refund || kind === Kind.Rollback;
+
+    let reference = await this.findReference(tx, transaction);
+    let failureCode: string | undefined;
+
+    if (isReversal && !reference) {
+      if (allowPending) {
+        transaction.status = Status.PendingReference;
+        transaction.nextRetryAt = new Date(Date.now() + 2000);
+
+        transaction.resultPayload = {
+          balance: {
+            amount: before.toFixed(2),
+            currency: wallet.currency,
+          },
+        };
+
+        await tx.flush();
+        return;
+      }
+
+      // A referência continua ausente durante uma tentativa do worker.
+      transaction.retryAttempts += 1;
+
+      if (transaction.retryAttempts >= this.maxRetryAttempts) {
+        transaction.status = Status.Rejected;
+        transaction.failureCode = 'REFERENCE_NOT_FOUND';
+        transaction.processedAt = new Date();
+        transaction.nextRetryAt = undefined;
+      } else {
+        const delay = 2000 * 2 ** transaction.retryAttempts;
+
+        transaction.nextRetryAt = new Date(Date.now() + delay);
+      }
+
+      await tx.flush();
+      return;
+    }
+
+    if (reference) {
+      const validReference =
+        reference.status === Status.Processed &&
+        reference.playerId === transaction.playerId &&
+        reference.wallet.id === wallet.id &&
+        reference.currency === transaction.currency &&
+        reference.roundId === transaction.roundId &&
+        reference.gameId === transaction.gameId;
+
+      if (!validReference) {
+        failureCode = 'INVALID_REFERENCE';
+      }
+
+      if (kind === Kind.Refund && reference.kind !== Kind.Bet) {
+        failureCode = 'INVALID_REFERENCE_KIND';
+      }
+
+      if (
+        kind === Kind.Rollback &&
+        ![Kind.Bet, Kind.Win, Kind.Refund].includes(reference.kind)
+      ) {
+        failureCode = 'INVALID_REFERENCE_KIND';
+      }
+
+      if (isReversal && !amount.eq(new Decimal(reference.amount))) {
+        failureCode = 'AMOUNT_MISMATCH';
+      }
+
+      if (isReversal && !failureCode) {
+        const previous = await tx.findOne(WagerTransactionEntity, {
+          referenceTransactionId: reference.id,
+          kind,
+          status: Status.Processed,
+        });
+
+        if (previous && previous.id !== transaction.id) {
+          failureCode = 'ALREADY_REVERSED';
+        }
+      }
+
+      if (!failureCode) {
+        transaction.referenceTransactionId = reference.id;
+      }
+    }
+
+    // WIN pode ser independente ou referenciar uma BET processada.
+    if (
+      kind === Kind.Win &&
+      transaction.referenceExternalTransactionId &&
+      (!reference ||
+        reference.kind !== Kind.Bet ||
+        reference.status !== Status.Processed ||
+        reference.playerId !== transaction.playerId ||
+        reference.wallet.id !== wallet.id ||
+        reference.currency !== transaction.currency ||
+        reference.roundId !== transaction.roundId)
+    ) {
+      failureCode = 'INVALID_BET_REFERENCE';
+    }
+
+    let direction: LedgerDirection | null = null;
+
+    if (kind === Kind.Bet) {
+      direction = LedgerDirection.Debit;
+    } else if (kind === Kind.Win || kind === Kind.Refund) {
+      direction = LedgerDirection.Credit;
+    } else if (kind === Kind.Rollback && reference) {
+      direction =
+        reference.kind === Kind.Bet
+          ? LedgerDirection.Credit
+          : LedgerDirection.Debit;
+    }
+
+    let after = before;
+
+    if (!failureCode && direction) {
+      after =
+        direction === LedgerDirection.Credit
+          ? before.plus(amount)
+          : before.minus(amount);
+
+      if (after.isNegative()) {
+        failureCode = isReversal
+          ? 'REVERSAL_INSUFFICIENT_FUNDS'
+          : 'INSUFFICIENT_FUNDS';
+        after = before;
+      }
+
+      if (after.gte('1000000000000000000')) {
+        failureCode = 'BALANCE_LIMIT_EXCEEDED';
+        after = before;
+      }
+    }
+
+    transaction.status = failureCode ? Status.Rejected : Status.Processed;
+
+    transaction.failureCode = failureCode;
+    transaction.processedAt = new Date();
+    transaction.nextRetryAt = undefined;
+
+    transaction.resultPayload = {
+      balance: {
+        amount: after.toFixed(2),
+        currency: wallet.currency,
+      },
+    };
+
+    if (transaction.status === Status.Processed && direction) {
+      wallet.balance = after.toFixed(2);
+
+      const ledger = new WalletLedgerEntryEntity();
+      ledger.wallet = wallet;
+      ledger.transaction = transaction;
+      ledger.direction = direction;
+      ledger.amount = transaction.amount;
+      ledger.balanceBefore = before.toFixed(2);
+      ledger.balanceAfter = after.toFixed(2);
+
+      tx.persist(ledger);
+    }
+
+    await tx.flush();
+  }
+
   async process(data: CreateWagerDto, idempotencyKey: string) {
-    if (!idempotencyKey?.trim()) {
+    if (typeof idempotencyKey !== 'string' || !idempotencyKey.trim()) {
       throw new BadRequestException('Idempotency-Key is required');
     }
 
@@ -139,11 +365,12 @@ export class WageringService {
     }
 
     const kind = data.kind as Kind;
-    const isReversal = kind === Kind.Refund || kind === Kind.Rollback;
-
     const referenceId = data.referenceExternalTransactionId;
 
-    if (isReversal && !referenceId?.trim()) {
+    if (
+      (kind === Kind.Refund || kind === Kind.Rollback) &&
+      (typeof referenceId !== 'string' || !referenceId.trim())
+    ) {
       throw new BadRequestException('Reference is required');
     }
 
@@ -160,60 +387,33 @@ export class WageringService {
 
     const normalizedAmount = amount.toFixed(2);
 
-    const payload = {
-      providerId: data.providerId,
-      externalTransactionId: data.externalTransactionId,
-      playerId: data.playerId,
-      walletId: data.walletId,
-      roundId: data.roundId,
-      gameId: data.gameId,
-      kind,
-      money: {
-        amount: normalizedAmount,
-        currency: data.money.currency,
-      },
-      referenceExternalTransactionId: referenceId ?? null,
-    };
-
     const payloadHash = createHash('sha256')
-      .update(JSON.stringify(payload))
+      .update(
+        JSON.stringify({
+          providerId: data.providerId,
+          externalTransactionId: data.externalTransactionId,
+          playerId: data.playerId,
+          walletId: data.walletId,
+          roundId: data.roundId,
+          gameId: data.gameId,
+          kind,
+          money: {
+            amount: normalizedAmount,
+            currency: data.money.currency,
+          },
+          referenceExternalTransactionId: referenceId ?? null,
+        }),
+      )
       .digest('hex');
 
-    // Recupera uma resposta já armazenada.
-    const findDuplicate = async () => {
-      const existing = await this.em.fork().findOne(WagerTransactionEntity, {
-        $or: [
-          { idempotencyKey },
-          {
-            providerId: data.providerId,
-            externalTransactionId: data.externalTransactionId,
-          },
-        ],
-      });
+    const existing = await this.findExisting(
+      this.em.fork(),
+      data,
+      idempotencyKey,
+    );
 
-      if (!existing) {
-        return null;
-      }
-
-      if (
-        existing.idempotencyKey !== idempotencyKey ||
-        existing.payloadHash !== payloadHash
-      ) {
-        throw new ConflictException('Idempotency conflict');
-      }
-
-      return {
-        transactionId: existing.id,
-        status: existing.status,
-        balance: existing.resultPayload?.balance,
-        idempotentReplay: true,
-      };
-    };
-
-    const duplicate = await findDuplicate();
-
-    if (duplicate) {
-      return duplicate;
+    if (existing) {
+      return this.checkReplay(existing, idempotencyKey, payloadHash);
     }
 
     try {
@@ -221,9 +421,7 @@ export class WageringService {
         const wallet = await tx.findOne(
           WalletEntity,
           { id: data.walletId },
-          {
-            lockMode: LockMode.PESSIMISTIC_WRITE,
-          },
+          { lockMode: LockMode.PESSIMISTIC_WRITE },
         );
 
         if (!wallet) {
@@ -237,34 +435,11 @@ export class WageringService {
           throw new BadRequestException('Wallet mismatch');
         }
 
-        // Revalida a idempotência após bloquear a carteira.
-        const existing = await tx.findOne(WagerTransactionEntity, {
-          $or: [
-            { idempotencyKey },
-            {
-              providerId: data.providerId,
-              externalTransactionId: data.externalTransactionId,
-            },
-          ],
-        });
+        const duplicate = await this.findExisting(tx, data, idempotencyKey);
 
-        if (existing) {
-          if (
-            existing.idempotencyKey !== idempotencyKey ||
-            existing.payloadHash !== payloadHash
-          ) {
-            throw new ConflictException('Idempotency conflict');
-          }
-
-          return {
-            transactionId: existing.id,
-            status: existing.status,
-            balance: existing.resultPayload?.balance,
-            idempotentReplay: true,
-          };
+        if (duplicate) {
+          return this.checkReplay(duplicate, idempotencyKey, payloadHash);
         }
-
-        const before = new Decimal(wallet.balance);
 
         const transaction = new WagerTransactionEntity();
 
@@ -284,180 +459,77 @@ export class WageringService {
           transaction.referenceExternalTransactionId = referenceId;
         }
 
-        // Localiza a transação original quando necessário.
-        let reference: WagerTransactionEntity | null = null;
-
-        if (referenceId) {
-          reference = await tx.findOne(WagerTransactionEntity, {
-            providerId: data.providerId,
-            externalTransactionId: referenceId,
-          });
-        }
-
-        let failureCode: string | undefined;
-
-        let pendingReference = false;
-
-        if (isReversal && !reference) {
-          pendingReference = true;
-        }
-
-        if (reference) {
-          const validReference =
-            reference.status === Status.Processed &&
-            reference.playerId === data.playerId &&
-            reference.wallet.id === wallet.id &&
-            reference.currency === data.money.currency &&
-            reference.roundId === data.roundId &&
-            reference.gameId === data.gameId;
-
-          if (!validReference) {
-            failureCode = 'INVALID_REFERENCE';
-          }
-
-          if (kind === Kind.Refund && reference.kind !== Kind.Bet) {
-            failureCode = 'INVALID_REFERENCE_KIND';
-          }
-
-          if (
-            kind === Kind.Rollback &&
-            ![Kind.Bet, Kind.Win, Kind.Refund].includes(reference.kind)
-          ) {
-            failureCode = 'INVALID_REFERENCE_KIND';
-          }
-
-          if (isReversal && !amount.eq(new Decimal(reference.amount))) {
-            failureCode = 'AMOUNT_MISMATCH';
-          }
-
-          if (isReversal && !failureCode) {
-            const previousReversal = await tx.findOne(WagerTransactionEntity, {
-              referenceTransactionId: reference.id,
-              kind,
-              status: Status.Processed,
-            });
-
-            if (previousReversal) {
-              failureCode = 'ALREADY_REVERSED';
-            }
-          }
-
-          if (!failureCode) {
-            transaction.referenceTransactionId = reference.id;
-          }
-        }
-
-        // WIN com referência exige uma BET processada.
-        if (
-          kind === Kind.Win &&
-          referenceId &&
-          (!reference ||
-            reference.kind !== Kind.Bet ||
-            reference.status !== Status.Processed ||
-            reference.playerId !== data.playerId ||
-            reference.wallet.id !== wallet.id ||
-            reference.currency !== data.money.currency ||
-            reference.roundId !== data.roundId)
-        ) {
-          failureCode = 'INVALID_BET_REFERENCE';
-        }
-
-        let direction: LedgerDirection | null = null;
-
-        if (kind === Kind.Bet) {
-          direction = LedgerDirection.Debit;
-        } else if (kind === Kind.Win || kind === Kind.Refund) {
-          direction = LedgerDirection.Credit;
-        } else if (kind === Kind.Rollback && reference) {
-          direction =
-            reference.kind === Kind.Bet
-              ? LedgerDirection.Credit
-              : LedgerDirection.Debit;
-        }
-
-        let after = before;
-
-        if (!failureCode && !pendingReference && direction) {
-          after =
-            direction === LedgerDirection.Credit
-              ? before.plus(amount)
-              : before.minus(amount);
-
-          if (after.isNegative()) {
-            failureCode = isReversal
-              ? 'REVERSAL_INSUFFICIENT_FUNDS'
-              : 'INSUFFICIENT_FUNDS';
-
-            after = before;
-          }
-
-          // NUMERIC(20,2) permite até 18 dígitos inteiros.
-          if (after.gte(new Decimal('1000000000000000000'))) {
-            failureCode = 'BALANCE_LIMIT_EXCEEDED';
-            after = before;
-          }
-        }
-
-        if (pendingReference) {
-          transaction.status = Status.PendingReference;
-        } else if (failureCode) {
-          transaction.status = Status.Rejected;
-
-          transaction.failureCode = failureCode;
-
-          transaction.processedAt = new Date();
-        } else {
-          transaction.status = Status.Processed;
-
-          transaction.processedAt = new Date();
-        }
-
-        const balance = {
-          amount: after.toFixed(2),
-          currency: wallet.currency,
-        };
-
-        transaction.resultPayload = {
-          balance,
-        };
-
         tx.persist(transaction);
 
-        // Apenas operações aprovadas movimentam o ledger.
-        if (transaction.status === Status.Processed && direction) {
-          wallet.balance = after.toFixed(2);
+        await this.applyTransaction(tx, wallet, transaction, true);
 
-          const ledger = new WalletLedgerEntryEntity();
-
-          ledger.wallet = wallet;
-          ledger.transaction = transaction;
-          ledger.direction = direction;
-          ledger.amount = normalizedAmount;
-          ledger.balanceBefore = before.toFixed(2);
-          ledger.balanceAfter = after.toFixed(2);
-
-          tx.persist(ledger);
-        }
-
-        await tx.flush();
-
-        return {
-          transactionId: transaction.id,
-          status: transaction.status,
-          balance,
-          idempotentReplay: false,
-        };
+        return this.response(transaction);
       });
     } catch (error) {
       if (error instanceof UniqueConstraintViolationException) {
-        const existing = await findDuplicate();
+        const found = await this.findExisting(
+          this.em.fork(),
+          data,
+          idempotencyKey,
+        );
 
-        if (existing) {
-          return existing;
+        if (found) {
+          return this.checkReplay(found, idempotencyKey, payloadHash);
         }
       }
 
       throw error;
     }
+  }
+
+  // Reprocessa uma transação pendente usando as mesmas regras.
+  async retryPendingTransaction(transactionId: string) {
+    return this.em.transactional(async (tx) => {
+      const pending = await tx.findOne(WagerTransactionEntity, {
+        id: transactionId,
+      });
+
+      if (!pending || pending.status !== Status.PendingReference) {
+        return;
+      }
+
+      if (pending.nextRetryAt && pending.nextRetryAt.getTime() > Date.now()) {
+        return;
+      }
+
+      // A carteira é sempre bloqueada antes de alterar o saldo.
+      const wallet = await tx.findOne(
+        WalletEntity,
+        { id: pending.wallet.id },
+        { lockMode: LockMode.PESSIMISTIC_WRITE },
+      );
+
+      if (!wallet) {
+        throw new NotFoundException('Wallet not found');
+      }
+
+      // Bloqueia também a transação, impedindo dois workers.
+      const transaction = await tx.findOne(
+        WagerTransactionEntity,
+        { id: transactionId },
+        {
+          lockMode: LockMode.PESSIMISTIC_WRITE,
+          refresh: true,
+        },
+      );
+
+      if (!transaction || transaction.status !== Status.PendingReference) {
+        return;
+      }
+
+      if (
+        transaction.nextRetryAt &&
+        transaction.nextRetryAt.getTime() > Date.now()
+      ) {
+        return;
+      }
+
+      await this.applyTransaction(tx, wallet, transaction, false);
+    });
   }
 }
