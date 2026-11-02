@@ -1,29 +1,47 @@
 import { Controller, Get, ServiceUnavailableException } from '@nestjs/common';
 import { EntityManager } from '@mikro-orm/postgresql';
+import { SqsService } from './infrastructure/messaging/sqs.service.js';
 
 @Controller('health')
 export class HealthController {
-  constructor(private readonly em: EntityManager) {}
+  constructor(
+    private readonly em: EntityManager,
+    private readonly sqs: SqsService,
+  ) {}
 
   @Get('live')
   live() {
     return { status: 'ok' };
   }
 
-  // Verifica a conexão com PostgreSQL.
-  // SQS será incluído quando integrarmos a fila.
   @Get('ready')
   async ready() {
+    // Verifica o PostgreSQL.
     try {
       await this.em.getConnection().execute('select 1');
-
-      return {
-        status: 'ok',
-        postgres: 'ok',
-        sqs: 'not_configured',
-      };
     } catch {
-      throw new ServiceUnavailableException('PostgreSQL unavailable');
+      throw new ServiceUnavailableException({
+        status: 'error',
+        postgres: 'unavailable',
+        sqs: 'unknown',
+      });
     }
+
+    // Verifica a conexão com o SQS.
+    try {
+      await this.sqs.checkConnection();
+    } catch {
+      throw new ServiceUnavailableException({
+        status: 'error',
+        postgres: 'ok',
+        sqs: 'unavailable',
+      });
+    }
+
+    return {
+      status: 'ok',
+      postgres: 'ok',
+      sqs: 'ok',
+    };
   }
 }

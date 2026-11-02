@@ -76,18 +76,14 @@ export class SqsService implements OnModuleDestroy {
   }
 
   async checkConnection(): Promise<boolean> {
-    try {
-      await this.client.send(
-        new GetQueueAttributesCommand({
-          QueueUrl: this.transactionsQueueUrl,
-          AttributeNames: ['QueueArn'],
-        }),
-      );
+    await this.client.send(
+      new GetQueueAttributesCommand({
+        QueueUrl: this.transactionsQueueUrl,
+        AttributeNames: ['QueueArn'],
+      }),
+    );
 
-      return true;
-    } catch {
-      return false;
-    }
+    return true;
   }
 
   async onModuleDestroy() {
