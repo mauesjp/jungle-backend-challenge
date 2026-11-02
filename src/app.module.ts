@@ -2,18 +2,22 @@ import { Module } from '@nestjs/common';
 import { ConfigModule, ConfigService } from '@nestjs/config';
 import { MikroOrmModule } from '@mikro-orm/nestjs';
 import { PostgreSqlDriver } from '@mikro-orm/postgresql';
-import { WalletEntity } from './infrastructure/persistence/entities/wallet.entity.js';
 import { Migrator } from '@mikro-orm/migrations';
 
+import { WalletEntity } from './infrastructure/persistence/entities/wallet.entity.js';
 import { WagerTransactionEntity } from './infrastructure/persistence/entities/wager-transaction.entity.js';
 import { WalletLedgerEntryEntity } from './infrastructure/persistence/entities/wallet-ledger-entry.entity.js';
-import { WageringController } from './wagering/wagering.controller.js';
-import { WageringService } from './wagering/wagering.service.js';
-import { WalletsController } from './wallets/wallets.controller.js';
-import { WalletsService } from './wallets/wallets.service.js';
 
 import { AppController } from './app.controller.js';
 import { AppService } from './app.service.js';
+import { HealthController } from './health.controller.js';
+
+import { WalletsController } from './wallets/wallets.controller.js';
+import { WalletsService } from './wallets/wallets.service.js';
+
+import { WageringController } from './wagering/wagering.controller.js';
+import { WageringService } from './wagering/wagering.service.js';
+import { ProviderTransactionsController } from './wagering/provider-transactions.controller.js';
 
 @Module({
   imports: [
@@ -41,7 +45,13 @@ import { AppService } from './app.service.js';
       }),
     }),
   ],
-  controllers: [AppController, WalletsController, WageringController],
+  controllers: [
+    AppController,
+    WalletsController,
+    WageringController,
+    ProviderTransactionsController,
+    HealthController,
+  ],
   providers: [AppService, WalletsService, WageringService],
 })
 export class AppModule {}

@@ -4,21 +4,25 @@ import {
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
+
 import {
   EntityManager,
   LockMode,
   UniqueConstraintViolationException,
 } from '@mikro-orm/postgresql';
+
 import { Decimal } from 'decimal.js';
 import { createHash } from 'node:crypto';
 
 import { WalletEntity } from '../infrastructure/persistence/entities/wallet.entity.js';
 import { WagerTransactionEntity } from '../infrastructure/persistence/entities/wager-transaction.entity.js';
 import { WalletLedgerEntryEntity } from '../infrastructure/persistence/entities/wallet-ledger-entry.entity.js';
+
 import {
   WagerTransactionKind as Kind,
   WagerTransactionStatus as Status,
 } from '../domain/enums/wager-transaction.enum.js';
+
 import { LedgerDirection } from '../domain/enums/ledger-direction.enum.js';
 
 export interface CreateWagerDto {
@@ -39,6 +43,56 @@ export interface CreateWagerDto {
 @Injectable()
 export class WageringService {
   constructor(private readonly em: EntityManager) {}
+
+  // Consulta uma transação pelo ID interno.
+  async getById(transactionId: string) {
+    const transaction = await this.em.findOne(WagerTransactionEntity, {
+      id: transactionId,
+    });
+
+    if (!transaction) {
+      throw new NotFoundException('Transaction not found');
+    }
+
+    return this.toDetails(transaction);
+  }
+
+  // Consulta uma transação pelo identificador do provedor.
+  async getByProvider(providerId: string, externalTransactionId: string) {
+    const transaction = await this.em.findOne(WagerTransactionEntity, {
+      providerId,
+      externalTransactionId,
+    });
+
+    if (!transaction) {
+      throw new NotFoundException('Transaction not found');
+    }
+
+    return this.toDetails(transaction);
+  }
+
+  private toDetails(transaction: WagerTransactionEntity) {
+    return {
+      transactionId: transaction.id,
+      providerId: transaction.providerId,
+      externalTransactionId: transaction.externalTransactionId,
+      walletId: transaction.wallet.id,
+      playerId: transaction.playerId,
+      roundId: transaction.roundId,
+      gameId: transaction.gameId,
+      kind: transaction.kind,
+      status: transaction.status,
+      money: {
+        amount: transaction.amount,
+        currency: transaction.currency,
+      },
+      referenceExternalTransactionId:
+        transaction.referenceExternalTransactionId ?? null,
+      failureCode: transaction.failureCode ?? null,
+      processedAt: transaction.processedAt ?? null,
+      balance: transaction.resultPayload?.balance ?? null,
+    };
+  }
 
   async process(data: CreateWagerDto, idempotencyKey: string) {
     if (!idempotencyKey?.trim()) {
@@ -86,6 +140,7 @@ export class WageringService {
 
     const kind = data.kind as Kind;
     const isReversal = kind === Kind.Refund || kind === Kind.Rollback;
+
     const referenceId = data.referenceExternalTransactionId;
 
     if (isReversal && !referenceId?.trim()) {
@@ -136,7 +191,9 @@ export class WageringService {
         ],
       });
 
-      if (!existing) return null;
+      if (!existing) {
+        return null;
+      }
 
       if (
         existing.idempotencyKey !== idempotencyKey ||
@@ -154,14 +211,19 @@ export class WageringService {
     };
 
     const duplicate = await findDuplicate();
-    if (duplicate) return duplicate;
+
+    if (duplicate) {
+      return duplicate;
+    }
 
     try {
       return await this.em.transactional(async (tx) => {
         const wallet = await tx.findOne(
           WalletEntity,
           { id: data.walletId },
-          { lockMode: LockMode.PESSIMISTIC_WRITE },
+          {
+            lockMode: LockMode.PESSIMISTIC_WRITE,
+          },
         );
 
         if (!wallet) {
@@ -175,7 +237,7 @@ export class WageringService {
           throw new BadRequestException('Wallet mismatch');
         }
 
-        // Verifica novamente depois de bloquear a carteira.
+        // Revalida a idempotência após bloquear a carteira.
         const existing = await tx.findOne(WagerTransactionEntity, {
           $or: [
             { idempotencyKey },
@@ -205,6 +267,7 @@ export class WageringService {
         const before = new Decimal(wallet.balance);
 
         const transaction = new WagerTransactionEntity();
+
         transaction.providerId = data.providerId;
         transaction.externalTransactionId = data.externalTransactionId;
         transaction.idempotencyKey = idempotencyKey;
@@ -221,7 +284,7 @@ export class WageringService {
           transaction.referenceExternalTransactionId = referenceId;
         }
 
-        // Localizar a operação original, quando necessário.
+        // Localiza a transação original quando necessário.
         let reference: WagerTransactionEntity | null = null;
 
         if (referenceId) {
@@ -232,6 +295,7 @@ export class WageringService {
         }
 
         let failureCode: string | undefined;
+
         let pendingReference = false;
 
         if (isReversal && !reference) {
@@ -327,7 +391,7 @@ export class WageringService {
             after = before;
           }
 
-          // NUMERIC(20,2) admite no máximo 18 dígitos inteiros.
+          // NUMERIC(20,2) permite até 18 dígitos inteiros.
           if (after.gte(new Decimal('1000000000000000000'))) {
             failureCode = 'BALANCE_LIMIT_EXCEEDED';
             after = before;
@@ -338,10 +402,13 @@ export class WageringService {
           transaction.status = Status.PendingReference;
         } else if (failureCode) {
           transaction.status = Status.Rejected;
+
           transaction.failureCode = failureCode;
+
           transaction.processedAt = new Date();
         } else {
           transaction.status = Status.Processed;
+
           transaction.processedAt = new Date();
         }
 
@@ -350,14 +417,18 @@ export class WageringService {
           currency: wallet.currency,
         };
 
-        transaction.resultPayload = { balance };
+        transaction.resultPayload = {
+          balance,
+        };
+
         tx.persist(transaction);
 
-        // Somente operações financeiras aprovadas geram ledger.
+        // Apenas operações aprovadas movimentam o ledger.
         if (transaction.status === Status.Processed && direction) {
           wallet.balance = after.toFixed(2);
 
           const ledger = new WalletLedgerEntryEntity();
+
           ledger.wallet = wallet;
           ledger.transaction = transaction;
           ledger.direction = direction;
@@ -380,7 +451,10 @@ export class WageringService {
     } catch (error) {
       if (error instanceof UniqueConstraintViolationException) {
         const existing = await findDuplicate();
-        if (existing) return existing;
+
+        if (existing) {
+          return existing;
+        }
       }
 
       throw error;
