@@ -5,6 +5,8 @@ import 'dotenv/config';
 
 import { WagerTransactionEntity } from './src/infrastructure/persistence/entities/wager-transaction.entity.js';
 import { WalletLedgerEntryEntity } from './src/infrastructure/persistence/entities/wallet-ledger-entry.entity.js';
+import { InboxMessageEntity } from './src/infrastructure/persistence/entities/inbox-message.entity.js';
+import { OutboxMessageEntity } from './src/infrastructure/persistence/entities/outbox-message.entity.js';
 
 export default defineConfig({
   host: process.env.DB_HOST ?? 'localhost',
@@ -13,7 +15,13 @@ export default defineConfig({
   password: process.env.DB_PASSWORD,
   dbName: process.env.DB_NAME,
 
-  entities: [WalletEntity, WagerTransactionEntity, WalletLedgerEntryEntity],
+  entities: [
+    WalletEntity,
+    WagerTransactionEntity,
+    WalletLedgerEntryEntity,
+    InboxMessageEntity,
+    OutboxMessageEntity,
+  ],
   extensions: [Migrator],
 
   migrations: {
