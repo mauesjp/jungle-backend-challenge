@@ -7,6 +7,10 @@ import { Migrator } from '@mikro-orm/migrations';
 import { WalletEntity } from './infrastructure/persistence/entities/wallet.entity.js';
 import { WagerTransactionEntity } from './infrastructure/persistence/entities/wager-transaction.entity.js';
 import { WalletLedgerEntryEntity } from './infrastructure/persistence/entities/wallet-ledger-entry.entity.js';
+import { InboxMessageEntity } from './infrastructure/persistence/entities/inbox-message.entity.js';
+import { OutboxMessageEntity } from './infrastructure/persistence/entities/outbox-message.entity.js';
+
+import { MessagingModule } from './infrastructure/messaging/messaging.module.js';
 
 import { AppController } from './app.controller.js';
 import { AppService } from './app.service.js';
@@ -41,10 +45,14 @@ import { PendingReferenceWorker } from './wagering/pending-reference.worker.js';
           WalletEntity,
           WagerTransactionEntity,
           WalletLedgerEntryEntity,
+          InboxMessageEntity,
+          OutboxMessageEntity,
         ],
         allowGlobalContext: false,
       }),
     }),
+
+    MessagingModule,
   ],
 
   controllers: [

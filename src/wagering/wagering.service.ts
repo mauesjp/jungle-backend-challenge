@@ -11,6 +11,8 @@ import {
 } from '@mikro-orm/postgresql';
 import { Decimal } from 'decimal.js';
 import { createHash } from 'node:crypto';
+import { InboxMessageEntity } from '../infrastructure/persistence/entities/inbox-message.entity.js';
+import { OutboxMessageEntity } from '../infrastructure/persistence/entities/outbox-message.entity.js';
 
 import { WalletEntity } from '../infrastructure/persistence/entities/wallet.entity.js';
 import { WagerTransactionEntity } from '../infrastructure/persistence/entities/wager-transaction.entity.js';
@@ -317,6 +319,34 @@ export class WageringService {
       tx.persist(ledger);
     }
 
+    // Registra o evento na mesma transação do saldo e do ledger.
+    // Operações pendentes só gerarão evento quando finalizadas.
+    if (
+      transaction.status === Status.Processed ||
+      transaction.status === Status.Rejected
+    ) {
+      const event = new OutboxMessageEntity();
+
+      event.aggregateId = wallet.id;
+      event.eventType = 'wager.transaction.finalized';
+
+      event.payload = {
+        transactionId: transaction.id,
+        providerId: transaction.providerId,
+        externalTransactionId: transaction.externalTransactionId,
+        walletId: wallet.id,
+        playerId: transaction.playerId,
+        kind: transaction.kind,
+        status: transaction.status,
+        amount: transaction.amount,
+        currency: transaction.currency,
+        balance: after.toFixed(2),
+        failureCode: transaction.failureCode ?? null,
+      };
+
+      tx.persist(event);
+    }
+
     await tx.flush();
   }
 
@@ -530,6 +560,59 @@ export class WageringService {
       }
 
       await this.applyTransaction(tx, wallet, transaction, false);
+    });
+  }
+
+  // Processa uma mensagem SQS e registra sua conclusão na inbox.
+  async processFromQueue(
+    messageId: string,
+    data: CreateWagerDto,
+    idempotencyKey: string,
+  ) {
+    if (!messageId || typeof messageId !== 'string') {
+      throw new BadRequestException('Invalid SQS message ID');
+    }
+
+    const payloadHash = createHash('sha256')
+      .update(JSON.stringify({ data, idempotencyKey }))
+      .digest('hex');
+
+    return this.em.transactional(async (tx) => {
+      const existing = await tx.findOne(InboxMessageEntity, {
+        consumerName: 'wagering-consumer',
+        messageId,
+      });
+
+      if (existing) {
+        if (existing.payloadHash !== payloadHash) {
+          throw new ConflictException('Inbox message payload conflict');
+        }
+
+        if (!existing.processedAt) {
+          throw new ConflictException('Inbox message is not completed');
+        }
+
+        return { alreadyProcessed: true };
+      }
+
+      const inbox = new InboxMessageEntity();
+      inbox.consumerName = 'wagering-consumer';
+      inbox.messageId = messageId;
+      inbox.payloadHash = payloadHash;
+
+      tx.persist(inbox);
+
+      // O processamento financeiro utiliza a transação ativa.
+      const result = await this.process(data, idempotencyKey);
+
+      inbox.processedAt = new Date();
+
+      await tx.flush();
+
+      return {
+        alreadyProcessed: false,
+        result,
+      };
     });
   }
 }
