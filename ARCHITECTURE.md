@@ -235,3 +235,47 @@ Future work could include:
 - Broader load testing and failure-injection coverage.
 
 These improvements are outside the currently validated scope.
+
+## Structured Logging and Metrics
+
+NestJS is configured to produce JSON logs.
+
+The SQS consumer records business message IDs, SQS message IDs, transaction identifiers, duplicate processing outcomes, and error details.
+
+The outbox publisher and pending-reference worker also produce structured operational logs.
+
+An in-memory MetricsService exposes counters and timing summaries through `GET /metrics`.
+
+Metrics are process-local and reset on restart. They provide lightweight development observability rather than persistent, distributed monitoring.
+
+## Graceful Shutdown
+
+The application enables SIGINT and SIGTERM shutdown hooks.
+
+All three background workers track their current processing cycle:
+
+- The SQS consumer waits for financial processing and message acknowledgment.
+- The outbox publisher waits for the current publication cycle before destroying its SQS client.
+- The pending-reference worker waits for the current retry and does not begin another retry after shutdown starts.
+
+These protections apply to cooperative shutdown. Forced termination can interrupt operations, so transactional persistence, inbox deduplication, and at-least-once delivery remain necessary.
+
+## Multi-Instance Verification
+
+Three NestJS processes were executed against the same PostgreSQL database and SQS infrastructure.
+
+A manual concurrency test submitted three different BET requests of BRL 80.00 simultaneously against a wallet holding BRL 100.00.
+
+The observed result was one PROCESSED transaction, two REJECTED transactions, and a final balance of BRL 20.00.
+
+Outbox publication activity was observed on multiple instances, and no unpublished events remained at the time of inspection.
+
+These checks support the correctness of the tested scenarios. They do not constitute exhaustive load testing or proof of exactly-once event delivery.
+
+## Authentication Boundary
+
+Authentication and authorization are outside the implemented local challenge scope.
+
+In a production system, provider authentication and authorization should occur at the API boundary before requests reach the wagering service. Provider identity should be derived from authenticated credentials rather than trusted solely from request payload fields.
+
+The metrics endpoint would also require appropriate access controls.

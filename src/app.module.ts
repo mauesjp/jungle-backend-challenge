@@ -11,6 +11,7 @@ import { InboxMessageEntity } from './infrastructure/persistence/entities/inbox-
 import { OutboxMessageEntity } from './infrastructure/persistence/entities/outbox-message.entity.js';
 
 import { MessagingModule } from './infrastructure/messaging/messaging.module.js';
+import { MetricsModule } from './metrics/metrics.module.js';
 
 import { AppController } from './app.controller.js';
 import { AppService } from './app.service.js';
@@ -53,6 +54,7 @@ import { PendingReferenceWorker } from './wagering/pending-reference.worker.js';
     }),
 
     MessagingModule,
+    MetricsModule,
   ],
 
   controllers: [

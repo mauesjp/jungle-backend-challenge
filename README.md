@@ -251,3 +251,57 @@ See `ARCHITECTURE.md` for financial transaction flows, concurrency decisions, re
 João Pedro Maués
 
 Backend technical challenge implementation.
+
+## SQS Request Contract
+
+The transactions consumer accepts the following message envelope:
+
+```json
+{
+  "messageId": "message-001",
+  "type": "WagerTransactionRequested",
+  "occurredAt": "2026-11-02T20:00:00.000Z",
+  "data": {
+    "providerId": "provider-001",
+    "externalTransactionId": "bet-001",
+    "idempotencyKey": "unique-request-001",
+    "playerId": "player-001",
+    "walletId": "wallet-uuid",
+    "roundId": "round-001",
+    "gameId": "game-001",
+    "kind": "BET",
+    "money": {
+      "amount": "30.00",
+      "currency": "BRL"
+    }
+  }
+}
+```
+
+The business `messageId` is used by the transactional inbox. Failed messages are not acknowledged and remain subject to SQS redelivery and DLQ handling.
+
+## Observability
+
+The application uses structured JSON logging.
+
+`GET /metrics` exposes local, in-memory counters for SQS processing, duplicate messages, failures, outbox publications, and pending-reference retry exceptions.
+
+It also exposes processing-time and outbox-delay statistics.
+
+Metrics are reset when the application restarts and are not aggregated across instances. The metrics endpoint is intended for local evaluation and should be protected in a production environment.
+
+## Graceful Shutdown
+
+The application handles SIGINT and SIGTERM through NestJS shutdown hooks.
+
+The SQS consumer, outbox publisher, and pending-reference worker stop scheduling new work and await their currently running cycles before completing shutdown.
+
+This reduces interruptions during ordinary shutdown, but does not prevent forced termination or eliminate at-least-once delivery.
+
+## Additional Validation
+
+The automated suite contains 38 passing tests across eight test files.
+
+Manual verification included three separate API instances sharing PostgreSQL. Three concurrent BET requests of BRL 80.00 against a BRL 100.00 wallet produced one PROCESSED result, two REJECTED results, and a final balance of BRL 20.00.
+
+The outbox was also observed operating across multiple instances, with no unpublished events remaining at the time of inspection.
