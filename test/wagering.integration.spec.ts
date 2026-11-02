@@ -208,4 +208,44 @@ describe('Wagering - integração real', () => {
     expect(rollbackResult.status).toBe('PROCESSED');
     expect(rollbackResult.balance.amount).toBe('100.00');
   });
+
+  it('should prevent concurrent refunds of the same bet', async () => {
+    const wallet = await createWallet('100.00');
+    const roundId = randomUUID();
+
+    const bet = createTransaction(wallet, 'BET', '30.00', {
+      roundId,
+    });
+
+    const betResult = await submit(bet);
+
+    expect(betResult.status).toBe('PROCESSED');
+    expect(betResult.balance.amount).toBe('70.00');
+
+    const refundA = createTransaction(wallet, 'REFUND', '30.00', {
+      roundId,
+      referenceExternalTransactionId: bet.externalTransactionId,
+    });
+
+    const refundB = createTransaction(wallet, 'REFUND', '30.00', {
+      roundId,
+      referenceExternalTransactionId: bet.externalTransactionId,
+    });
+
+    const results = await Promise.all([submit(refundA), submit(refundB)]);
+
+    expect(
+      results.filter((result) => result.status === 'PROCESSED'),
+    ).toHaveLength(1);
+
+    expect(
+      results.filter((result) => result.status === 'REJECTED'),
+    ).toHaveLength(1);
+
+    expect(results.every((result) => result.balance.amount === '100.00')).toBe(
+      true,
+    );
+
+    const response = await fetch(`http://localhost:3000/wallets/${wallet.id}`);
+  });
 });
