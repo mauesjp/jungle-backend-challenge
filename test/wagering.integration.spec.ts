@@ -246,7 +246,13 @@ describe('Wagering integration tests', () => {
       true,
     );
 
-    const response = await fetch(`http://localhost:3000/wallets/${wallet.id}`);
+    const response = await fetch(`${BASE_URL}/wallets/${wallet.id}`);
+
+    expect(response.ok).toBe(true);
+
+    const updatedWallet = (await response.json()) as WalletResponse;
+
+    expect(updatedWallet.balance.amount).toBe('100.00');
   });
 
   it('should recover a refund when the original bet arrives later', async () => {
@@ -307,4 +313,26 @@ describe('Wagering integration tests', () => {
     expect(recovered?.status).toBe('PROCESSED');
     expect(recovered?.balance.amount).toBe('100.00');
   }, 20000);
+
+  it('should process a zero amount LOSS without changing the wallet balance', async () => {
+    const wallet = await createWallet('100.00');
+
+    const loss = createTransaction(wallet, 'LOSS', '0.00');
+
+    const result = await submit(loss);
+
+    expect(result.status).toBe('PROCESSED');
+    expect(result.balance.amount).toBe('100.00');
+    expect(result.balance.currency).toBe('BRL');
+    expect(result.idempotentReplay).toBe(false);
+
+    // Confirma que a carteira permanece com o saldo inicial.
+    const walletResponse = await fetch(`${BASE_URL}/wallets/${wallet.id}`);
+
+    expect(walletResponse.ok).toBe(true);
+
+    const updatedWallet = (await walletResponse.json()) as WalletResponse;
+
+    expect(updatedWallet.balance.amount).toBe('100.00');
+  });
 });

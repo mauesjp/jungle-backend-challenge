@@ -447,8 +447,6 @@ export class WageringService {
     }
 
     await tx.flush();
-
-    await tx.flush();
   }
 
   async process(data: CreateWagerDto, idempotencyKey: string) {
@@ -491,11 +489,17 @@ export class WageringService {
 
     const amount = new Decimal(data.money.amount);
 
-    if (!amount.isFinite() || !amount.gt(0)) {
-      throw new BadRequestException('Amount must be positive');
+    // LOSS pode ter valor zero; as demais operações exigem valor positivo.
+    const kind = data.kind as Kind;
+
+    if (
+      !amount.isFinite() ||
+      amount.isNegative() ||
+      (amount.isZero() && kind !== Kind.Loss)
+    ) {
+      throw new BadRequestException('Invalid transaction amount');
     }
 
-    const kind = data.kind as Kind;
     const referenceId = data.referenceExternalTransactionId;
 
     if (
