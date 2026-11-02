@@ -253,7 +253,7 @@
           "autoincrement": false,
           "primary": false,
           "nullable": true,
-          "unique": false,
+          "unique": true,
           "length": null,
           "precision": null,
           "scale": null,
@@ -350,6 +350,18 @@
         }
       },
       "indexes": [
+        {
+          "columnNames": [
+            "reference_transaction_id",
+            "kind"
+          ],
+          "composite": true,
+          "constraint": false,
+          "keyName": "uq_processed_reversal_per_kind",
+          "primary": false,
+          "unique": true,
+          "where": "((status)::text = 'PROCESSED'::text) AND ((kind)::text = ANY ((ARRAY['REFUND'::character varying, 'ROLLBACK'::character varying])::text[])) AND (reference_transaction_id IS NOT NULL)"
+        },
         {
           "columnNames": [
             "idempotency_key"
