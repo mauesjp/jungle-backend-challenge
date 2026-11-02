@@ -94,11 +94,7 @@ export class OutboxPublisherService implements OnModuleInit, OnModuleDestroy {
     await this.client.send(
       new SendMessageCommand({
         QueueUrl: this.queueUrl,
-        MessageBody: JSON.stringify({
-          eventId: message.id,
-          eventType: message.event_type,
-          payload: message.payload,
-        }),
+        MessageBody: JSON.stringify(message.payload),
         MessageGroupId: message.aggregate_id,
         MessageDeduplicationId: message.id,
       }),

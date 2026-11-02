@@ -44,6 +44,39 @@ export class WageringService {
 
   private readonly maxRetryAttempts = 5;
 
+  // Registra eventos na outbox dentro da transação financeira.
+  private addOutboxEvent(
+    tx: EntityManager,
+    wallet: WalletEntity,
+    transaction: WagerTransactionEntity,
+    eventType:
+      | 'WagerTransactionProcessed'
+      | 'WagerTransactionRejected'
+      | 'WalletBalanceChanged'
+      | 'WagerTransactionPendingReference',
+    data: Record<string, unknown>,
+  ): void {
+    const event = new OutboxMessageEntity();
+
+    event.aggregateId = wallet.id;
+    event.eventType = eventType;
+    event.occurredAt = new Date();
+
+    // O payload contém um snapshot completo do evento.
+    event.payload = {
+      eventId: event.id,
+      eventType,
+      aggregateId: wallet.id,
+      correlationId: transaction.id,
+      causationId: transaction.referenceTransactionId ?? null,
+      occurredAt: event.occurredAt.toISOString(),
+      version: 1,
+      data,
+    };
+
+    tx.persist(event);
+  }
+
   private response(transaction: WagerTransactionEntity, replay = false) {
     return {
       transactionId: transaction.id,
@@ -176,6 +209,22 @@ export class WageringService {
           },
         };
 
+        this.addOutboxEvent(
+          tx,
+          wallet,
+          transaction,
+          'WagerTransactionPendingReference',
+          {
+            transactionId: transaction.id,
+            walletId: wallet.id,
+            providerId: transaction.providerId,
+            externalTransactionId: transaction.externalTransactionId,
+            referenceExternalTransactionId:
+              transaction.referenceExternalTransactionId,
+            status: transaction.status,
+          },
+        );
+
         await tx.flush();
         return;
       }
@@ -192,6 +241,27 @@ export class WageringService {
         const delay = 2000 * 2 ** transaction.retryAttempts;
 
         transaction.nextRetryAt = new Date(Date.now() + delay);
+      }
+
+      // Publica rejeição somente quando as tentativas se esgotam.
+      if (transaction.status === Status.Rejected) {
+        this.addOutboxEvent(
+          tx,
+          wallet,
+          transaction,
+          'WagerTransactionRejected',
+          {
+            transactionId: transaction.id,
+            walletId: wallet.id,
+            providerId: transaction.providerId,
+            externalTransactionId: transaction.externalTransactionId,
+            kind: transaction.kind,
+            status: transaction.status,
+            failureCode: transaction.failureCode,
+            referenceExternalTransactionId:
+              transaction.referenceExternalTransactionId,
+          },
+        );
       }
 
       await tx.flush();
@@ -319,33 +389,64 @@ export class WageringService {
       tx.persist(ledger);
     }
 
-    // Registra o evento na mesma transação do saldo e do ledger.
-    // Operações pendentes só gerarão evento quando finalizadas.
-    if (
-      transaction.status === Status.Processed ||
-      transaction.status === Status.Rejected
-    ) {
-      const event = new OutboxMessageEntity();
+    // Persiste as alterações financeiras na transação atual.
+    // O commit só ocorre quando a transação externa terminar.
+    await tx.flush();
 
-      event.aggregateId = wallet.id;
-      event.eventType = 'wager.transaction.finalized';
-
-      event.payload = {
-        transactionId: transaction.id,
-        providerId: transaction.providerId,
-        externalTransactionId: transaction.externalTransactionId,
-        walletId: wallet.id,
-        playerId: transaction.playerId,
-        kind: transaction.kind,
-        status: transaction.status,
+    const transactionData = {
+      transactionId: transaction.id,
+      walletId: wallet.id,
+      providerId: transaction.providerId,
+      externalTransactionId: transaction.externalTransactionId,
+      playerId: transaction.playerId,
+      roundId: transaction.roundId,
+      gameId: transaction.gameId,
+      kind: transaction.kind,
+      status: transaction.status,
+      money: {
         amount: transaction.amount,
         currency: transaction.currency,
-        balance: after.toFixed(2),
-        failureCode: transaction.failureCode ?? null,
-      };
+      },
+      failureCode: transaction.failureCode ?? null,
+    };
 
-      tx.persist(event);
+    if (transaction.status === Status.Processed) {
+      this.addOutboxEvent(
+        tx,
+        wallet,
+        transaction,
+        'WagerTransactionProcessed',
+        transactionData,
+      );
     }
+
+    if (transaction.status === Status.Rejected) {
+      this.addOutboxEvent(
+        tx,
+        wallet,
+        transaction,
+        'WagerTransactionRejected',
+        transactionData,
+      );
+    }
+
+    // Somente gera evento de saldo quando houve movimentação.
+    if (transaction.status === Status.Processed && direction) {
+      this.addOutboxEvent(tx, wallet, transaction, 'WalletBalanceChanged', {
+        walletId: wallet.id,
+        transactionId: transaction.id,
+        direction,
+        money: {
+          amount: transaction.amount,
+          currency: transaction.currency,
+        },
+        balanceBefore: before.toFixed(2),
+        balanceAfter: after.toFixed(2),
+        walletVersion: wallet.version,
+      });
+    }
+
+    await tx.flush();
 
     await tx.flush();
   }
