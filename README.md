@@ -1,4 +1,4 @@
-# Jungle Gaming — Backend Challenge
+# Jungle Gaming â€” Backend Challenge
 
 Backend implementation of a financial wagering system using NestJS, TypeScript, PostgreSQL, MikroORM, and AWS SQS (emulated locally with LocalStack).
 
@@ -100,6 +100,7 @@ Readiness verifies connectivity with PostgreSQL and the transactions SQS queue. 
 | GET    | `/providers/:providerId/wagering/transactions/:externalTransactionId` | Retrieve a provider transaction     |
 | GET    | `/health/live`                                                        | Liveness check                      |
 | GET    | `/health/ready`                                                       | Dependency readiness check          |
+| GET    | `/metrics`                                                            | Process-local operational metrics   |
 
 ## Example: Create a Wallet
 
@@ -175,11 +176,39 @@ The local environment creates three FIFO queues:
 - `wager-transactions-dlq.fifo`
 - `wager-events.fifo`
 
-The transactions queue receives messages containing an `idempotencyKey` and a `transaction` payload.
+The transactions queue receives `WagerTransactionRequested` envelopes containing `messageId`, `type`, `occurredAt`, and `data`. The business payload and `idempotencyKey` are inside `data`. See the contract below.
 
 The consumer records completed messages in an inbox table and acknowledges SQS messages only after successful processing.
 
 Failed messages are retried according to the SQS visibility timeout and redrive policy. Messages exceeding the configured receive count are transferred to the DLQ.
+
+## SQS Request Contract
+
+The transactions consumer accepts the following message envelope:
+
+```json
+{
+  "messageId": "message-001",
+  "type": "WagerTransactionRequested",
+  "occurredAt": "2026-11-02T20:00:00.000Z",
+  "data": {
+    "providerId": "provider-001",
+    "externalTransactionId": "bet-001",
+    "idempotencyKey": "unique-request-001",
+    "playerId": "player-001",
+    "walletId": "wallet-uuid",
+    "roundId": "round-001",
+    "gameId": "game-001",
+    "kind": "BET",
+    "money": {
+      "amount": "30.00",
+      "currency": "BRL"
+    }
+  }
+}
+```
+
+The business `messageId` is used by the transactional inbox. Failed messages are not acknowledged and remain subject to SQS redelivery and DLQ handling.
 
 ## Transactional Outbox
 
@@ -214,7 +243,7 @@ Run TypeScript validation:
 bunx tsc --noEmit
 ```
 
-The validated suite contains 18 tests across four test files.
+The validated suite contains 39 passing tests across nine test files, including a PostgreSQL financial-integrity regression test.
 
 Coverage includes money calculations, idempotency, concurrent bets, concurrent refunds, pending-reference recovery, zero-value LOSS, and transactional rollback across inbox and financial persistence.
 
@@ -236,49 +265,16 @@ Database locks and uniqueness constraints provide cross-process financial coordi
 ## Known Limitations
 
 - The environment is intended for local evaluation, not production deployment.
-- Docker Compose provisions infrastructure; the application runs separately on the host.
-- The SQS initialization service must be executed again if LocalStack is restarted and its queues are lost.
-- The outbox provides at-least-once delivery, not exactly-once delivery.
-- Background workers stop scheduling new cycles during shutdown but do not explicitly await completion of work already in progress.
-- Observability currently relies primarily on NestJS logs and health endpoints; a production-grade metrics/tracing stack is not included.
+- Docker Compose provisions PostgreSQL and LocalStack; the NestJS application runs separately on the host.
+- If LocalStack loses its queues after a restart, the queue initialization service must run again.
+- Outbox publication follows at-least-once semantics; duplicate deliveries remain possible.
+- Graceful shutdown awaits active worker cycles, but forced termination may still interrupt processing.
+- Metrics are process-local and reset on restart; distributed tracing and persistent metrics storage are not included.
+- The metrics endpoint is unauthenticated and should be restricted in production.
 
 ## Architecture
 
 See `ARCHITECTURE.md` for financial transaction flows, concurrency decisions, retry behavior, inbox/outbox guarantees, and architectural trade-offs.
-
-## Author
-
-João Pedro Maués
-
-Backend technical challenge implementation.
-
-## SQS Request Contract
-
-The transactions consumer accepts the following message envelope:
-
-```json
-{
-  "messageId": "message-001",
-  "type": "WagerTransactionRequested",
-  "occurredAt": "2026-11-02T20:00:00.000Z",
-  "data": {
-    "providerId": "provider-001",
-    "externalTransactionId": "bet-001",
-    "idempotencyKey": "unique-request-001",
-    "playerId": "player-001",
-    "walletId": "wallet-uuid",
-    "roundId": "round-001",
-    "gameId": "game-001",
-    "kind": "BET",
-    "money": {
-      "amount": "30.00",
-      "currency": "BRL"
-    }
-  }
-}
-```
-
-The business `messageId` is used by the transactional inbox. Failed messages are not acknowledged and remain subject to SQS redelivery and DLQ handling.
 
 ## Observability
 
@@ -300,8 +296,14 @@ This reduces interruptions during ordinary shutdown, but does not prevent forced
 
 ## Additional Validation
 
-The automated suite contains 38 passing tests across eight test files.
+The automated suite contains 39 passing tests across nine test files.
 
 Manual verification included three separate API instances sharing PostgreSQL. Three concurrent BET requests of BRL 80.00 against a BRL 100.00 wallet produced one PROCESSED result, two REJECTED results, and a final balance of BRL 20.00.
 
 The outbox was also observed operating across multiple instances, with no unpublished events remaining at the time of inspection.
+
+## Author
+
+JoÃ£o Pedro MauÃ©s
+
+Backend technical challenge implementation.

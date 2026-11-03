@@ -1,4 +1,4 @@
-# Architecture — Jungle Gaming Backend Challenge
+# Architecture â€” Jungle Gaming Backend Challenge
 
 ## Overview
 
@@ -182,32 +182,27 @@ LocalStack shutdown and recovery were manually verified.
 
 ## Background Worker Lifecycle
 
-The SQS consumer, outbox publisher, and pending-reference worker use periodic or continuous polling.
+The SQS consumer, outbox publisher, and pending-reference worker use polling and prevent overlapping cycles within each application process.
 
-Each worker prevents overlapping processing cycles inside its own application instance.
+NestJS handles SIGINT and SIGTERM through shutdown hooks. During cooperative shutdown, workers stop scheduling new work and await their active cycles.
 
-Cross-instance consistency relies on database transactions, row locks, uniqueness constraints, and stable messaging identifiers.
+The SQS consumer waits for processing and acknowledgment, the outbox publisher waits before destroying its SQS client, and the pending-reference worker waits for its current recovery attempt.
 
-During application shutdown, timers are cleared to stop scheduling new work.
-
-An explicit graceful-drain mechanism for in-flight worker operations is not implemented.
+Cross-instance consistency depends on PostgreSQL transactions, locks, uniqueness constraints, and stable messaging identifiers. Forced termination can interrupt processing, so idempotency and at-least-once delivery remain necessary.
 
 ## Verification
 
-The project includes unit and integration tests validating:
+The project contains 39 passing automated tests across nine test files.
 
-- Decimal-based monetary operations.
-- Wagering idempotency.
-- Concurrent transaction handling.
-- Concurrent duplicate request handling.
-- Refund and rollback rules.
-- Pending-reference recovery.
-- Zero-value LOSS processing.
-- Transactional rollback across inbox and financial records.
+The suite covers monetary calculations, idempotency, concurrent wagering, refunds, rollbacks, pending-reference recovery, zero-value LOSS, inbox transaction atomicity, message contract validation, worker shutdown behavior, operational metrics, and database financial-integrity protections.
 
-The validated suite contains 18 passing tests.
+Manual verification also covered SQS redelivery and DLQ, outbox recovery, health-check dependency failures, and three independent API instances sharing PostgreSQL.
 
-Additional manual tests covered separate application instances, SQS redelivery and DLQ behavior, outbox recovery, and health-check dependency failures.
+In the three-instance financial test, three concurrent BET requests of BRL 80.00 against a BRL 100.00 wallet resulted in one PROCESSED transaction, two REJECTED transactions, and a final balance of BRL 20.00.
+
+PostgreSQL also rejected an attempted modification of an existing ledger entry through the restored immutability trigger.
+
+These results demonstrate the tested scenarios, not exhaustive fault tolerance or exactly-once event delivery.
 
 ## Trade-offs and Limitations
 
@@ -227,14 +222,14 @@ Additional manual tests covered separate application instances, SQS redelivery a
 
 Future work could include:
 
-- Automated integration tests for SQS redelivery and DLQ handling.
-- Graceful shutdown that waits for in-flight worker operations.
-- Distributed worker coordination and stronger outbox ownership guarantees.
-- Structured metrics and distributed tracing.
+- Automated integration tests for SQS DLQ redrive and forced process termination.
+- Distributed metrics collection, tracing, and alerting.
+- Stronger distributed worker coordination and outbox reservation ownership.
+- Expanded domain encapsulation and state-transition methods.
 - Containerization of the NestJS application itself.
-- Broader load testing and failure-injection coverage.
+- Broader load testing and fault-injection coverage.
 
-These improvements are outside the currently validated scope.
+Cooperative graceful shutdown and basic structured metrics are already implemented; they are not outstanding tasks.
 
 ## Structured Logging and Metrics
 
